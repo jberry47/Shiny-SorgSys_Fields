@@ -23,13 +23,16 @@ library(shinyBS)
 library(shinydashboard)
 library(DT)
 library(shinyjs)
+library(mdatools)
+
+# shiny::runGitHub("jberry47/Shiny-SorgSys_Fields","jberry47")
 
 f16soil <- read.table("data/5ff4c4c88319c6a96e14c5b061e3c91f-schachtman_2016_soil.tsv",header=T,stringsAsFactors=F,sep="\t")
 f16biom <- read.table("data/5ff4c4c88319c6a96e14c5b061e3c91f-schachtman_2016_biom.tsv",header=T,stringsAsFactors=F,sep="\t")
 f17soil <- read.table("data/5ff4c4c88319c6a96e14c5b061e3c91f-schachtman_2017_soil.tsv",header=T,stringsAsFactors=F,sep="\t")
 f17biom <- read.table("data/5ff4c4c88319c6a96e14c5b061e3c91f-schachtman_2017_biom.tsv",header=T,stringsAsFactors=F,sep="\t")
 f17iso <- read.table("data/4dd9c063253b200b2ca408cc25e346c9-cousins_2017_field.tsv",header=T,stringsAsFactors=F,sep="\t")
-head(f17iso)
+metab <- read.csv("data/SpecAbundGROUPS_SM_Harvest_LCMS_4db.csv",header = T, stringsAsFactors = T)
 
 ui <- dashboardPage(skin="black", title="DOE Sorghum Systems",
                     dashboardHeader(
@@ -93,8 +96,6 @@ ui <- dashboardPage(skin="black", title="DOE Sorghum Systems",
                                 )
                         ),
                         tabItem(tabName = "2017fields",
-                                tabsetPanel(
-                                  tabPanel(title="Drought",
                                            fluidRow(
                                              box(style = "overflow-y:scroll",width=12,title = "Harvest Traits",solidHeader = T,status = 'success',collapsible = T,collapsed=T,
                                                  tabsetPanel(
@@ -159,17 +160,16 @@ ui <- dashboardPage(skin="black", title="DOE Sorghum Systems",
                                              box(style = "overflow-y:scroll",width=12,title = "Metabolomics",solidHeader = T,status = 'success',collapsible = TRUE,collapsed=T,
                                                  tabsetPanel(
                                                    tabPanel(title="ANOSIM",
-                                                            p("test")
+                                                            uiOutput("meta_parse"),
+                                                            hr(),
+                                                            actionButton("use_config","Use subset"),
+                                                            uiOutput("pca_output")  
                                                    )
                                                  )
                                              )
                                            )
-                                  ),
-                                  tabPanel(title="Nitrogen",
-                                  )
-                                )
+                            )
                         )
-                      )
                     )
 )
 
@@ -288,6 +288,120 @@ server = function(input, output, session){
       ggplot()
     }
   })
+  
+  
+  #**********************************************************************************************************************
+  # 2017 Metabolomics Data
+  #**********************************************************************************************************************
+  output$meta_parse <- renderUI({
+    if(!is.null(metab)){
+      dataTableOutput("meta_config")
+    }
+  })
+  
+  output$meta_config <- renderDataTable({
+    datatable(metab[,1:11],rownames = F,selection = "none",filter = 'top',options = list(sDom  = '<"top">lrt<"bottom">ip',pageLength = 5, autoWidth = TRUE))
+  })
+  
+  meta_sub <- reactiveValues(data = NULL)
+  observeEvent(input$use_config,{
+    rows <- input$meta_config_rows_all
+    meta_sub$data <- metab[rows,]
+    
+  })
+  
+  output$pca_output <- renderUI({
+    if(!is.null(meta_sub$data)){
+       tagList(
+         hr(),
+         column(width=4,
+            column(width = 6,
+                   selectInput("simca_grouping_1",width = 280,label = "Grouping 1",choices = colnames(meta_sub$data[1:11]),selected = "genotype"),
+                   selectInput("simca_x_axis",width = 280, label = "X-Axis",choices = c("Component 1", "Component 2", "Component 3", "Component 4", "Component 5", "Component 6", "Component 7", "Component 8", "Component 9", "Component 10", "Component 11", "Component 12", "Component 13", "Component 14", "Component 15"), selected = "Component 1")
+            ),
+            column(width = 6,
+                   selectInput("simca_grouping_2",width = 280,label = "Grouping 2",choices = colnames(meta_sub$data[1:11]),selected = "treatment"),
+                   selectInput("simca_y_axis",width = 280, label = "Y-Axis",choices = c("Component 1", "Component 2", "Component 3", "Component 4", "Component 5", "Component 6", "Component 7", "Component 8", "Component 9", "Component 10", "Component 11", "Component 12", "Component 13", "Component 14", "Component 15"), selected = "Component 2")
+            ),
+            textInput("simca_plot_name","Plot Name (ex: E17_leafOnly_cbTreatment.png)",width=400),
+            downloadButton("simca_download","Download Plot"),
+            br(),
+            downloadButton("data_download","Download Data (tsv)")
+         ),
+         column(width = 8,
+            plotOutput("simca_plot_ind")
+         )
+      )
+    }
+  })
+  
+  x <- reactive({
+    as.numeric(strsplit(input$simca_x_axis," ")[[1]][2])
+  })
+  
+  y <- reactive({
+    as.numeric(strsplit(input$simca_y_axis," ")[[1]][2])
+  })
+  
+  simca_df <- reactive({
+    x <- x()
+    y <- y()
+    comps <- meta_sub$data
+    simca <- simca(comps[,12:ncol(comps)],"blah",scale = T)
+    df <- data.frame(predict(simca, comps[,12:ncol(comps)])$scores[,1:15],stringsAsFactors = F)
+    df$Grouping1 <- comps[,input$simca_grouping_1]
+    df$Grouping2 <- comps[,input$simca_grouping_2]
+    varexp <- signif(100*simca$eigenvals[c(x,y)]/sum(simca$eigenvals),4)
+    list(df,varexp)
+  })
+  
+  simca_data <- reactive({
+    cbind(meta_sub$data[,1:11],simca_df()[[1]])
+  })
+  
+  
+  simca_plot <- reactive({
+    x <- x()
+    y <- y()
+    simca_df <- simca_df()
+    simca_df[[1]]$Grouping1 <- as.factor(simca_df[[1]]$Grouping1)
+    simca_df[[1]]$Grouping2 <- as.factor(simca_df[[1]]$Grouping2)
+    ggplot(data=simca_df[[1]], aes_string(colnames(simca_df[[1]])[x],colnames(simca_df[[1]])[y]))+
+      stat_ellipse(color="gray40",fill="white",geom = "polygon",type = "norm")+
+      geom_point(aes(color=Grouping2,shape=Grouping1),alpha=0.6,size=4)+
+      xlab(paste(gsub("Comp.","Component ",colnames(simca_df[[1]])[x])," (",simca_df[[2]][1],"%)",sep = ""))+
+      ylab(paste(gsub("Comp.","Component ",colnames(simca_df[[1]])[y])," (",simca_df[[2]][2],"%)",sep = ""))+
+      geom_vline(xintercept = 0,linetype="dashed")+
+      geom_hline(yintercept = 0,linetype="dashed")+
+      theme_bw()+
+      theme(panel.background = element_rect(fill = "gray95"))+
+      theme(strip.background=element_rect(fill="gray50"),
+            strip.text.x=element_text(size=14,color="white"),
+            strip.text.y=element_text(size=14,color="white"))+
+      theme(axis.text = element_text(size = 14),
+            axis.title= element_text(size = 18))+
+      theme(axis.ticks.length=unit(0.2,"cm"))+
+      theme(aspect.ratio=1)
+  })
+  
+  output$simca_plot_ind <- renderPlot({
+    simca_plot()
+  })
+  
+  output$simca_download <- downloadHandler(
+    filename = function() {input$simca_plot_name},
+    content=function(file){
+      ggsave(file,simca_plot(),device = "png",width = 6,height = 5,dpi = 300)
+    }
+  )
+  
+  output$data_download <- downloadHandler(
+    filename = function() {"metabolomics_simca_data.tsv"},
+    content = function(file){
+      head(simca_data())
+      write.table(simca_data(),file,row.names = FALSE, quote = FALSE,sep = "\t")
+    }
+  )
 }
 
 shinyApp(ui, server)
